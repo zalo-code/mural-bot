@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 SC_TZ = pytz.timezone('America/New_York')
 
-# --- CLASE DE OPORTUNIDAD ---
+# --- OPPORTUNITY CLASS ---
 class Opportunity:
     def __init__(self, title, org, city, state, description, link, deadline, entry_fee, budget, eligibility, keywords, source, cafe_id):
         self.title = title
@@ -81,23 +81,23 @@ def extract_keywords(text):
             found.add(kw)
     return ", ".join(sorted(found))
 
-# --- SCRAPER (TU LÓGICA DE PLAYWRIGHT) ---
+# --- SCRAPER (PLAYWRIGHT LOGIC) ---
 def run_scrapers():
     opportunities = []
     with sync_playwright() as p:
-        print("--- 🚀 INICIANDO CRAWLER (CAFÉ) ---")
+        print("--- 🚀 STARTING CRAWLER (CAFÉ) ---")
         browser = p.chromium.launch(headless=True) 
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         context.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,gif}", lambda route: route.abort())
         page = context.new_page()
 
         try:
-            print("Cargando lista...")
+            print("Loading list...")
             page.goto("https://artist.callforentry.org/festivals.php", timeout=60000)
             try:
                 page.wait_for_selector("a[href*='festivals_unique_info.php']", timeout=10000)
             except:
-                print("⚠️ Error cargando lista.")
+                print("⚠️ Error loading list.")
                 browser.close()
                 return []
             
@@ -112,7 +112,7 @@ def run_scrapers():
                         seen.add(url)
                         detail_links.append(url)
             
-            print(f"--> Encontrados {len(detail_links)} enlaces.")
+            print(f"--> Found {len(detail_links)} links.")
 
             for i, link in enumerate(detail_links):
                 try:
@@ -120,12 +120,12 @@ def run_scrapers():
                     page.goto(link, timeout=20000, wait_until='domcontentloaded')
                     full_body = page.inner_text("body")
 
-                    title = "Sin Título"
+                    title = "Untitled"
                     title_elem = page.query_selector("div.fairname")
                     if title_elem:
                         raw_title = title_elem.inner_text()
                         title = raw_title.split('\n')[0].strip()
-                    if title == "Sin Título" or "CaFÉ" == title:
+                    if title == "Untitled" or "CaFÉ" == title:
                         header_elem = page.query_selector(".header_text")
                         if header_elem: title = header_elem.inner_text().strip()
 
@@ -166,7 +166,7 @@ def run_scrapers():
                         fee_match = re.search(r'Entry Fee.*?:?\s*(\$[\d\.]+)', full_body, re.IGNORECASE)
                         if fee_match: entry_fee = fee_match.group(1)
 
-                    deadline = "Ver Link"
+                    deadline = "See Link"
                     dead_match = re.search(r'(?:Event Dates|Deadline).*?[:]\s*(.*?)(?:\n|$)', full_body, re.IGNORECASE)
                     if dead_match: deadline = dead_match.group(1).strip()
 
@@ -187,11 +187,11 @@ def run_scrapers():
                     print(f"[{i+1}] Error: {e}")
                     continue
         except Exception as e:
-            print(f"Error general: {e}")
+            print(f"General Error: {e}")
         browser.close()
     return opportunities
 
-# --- CONEXIÓN GOOGLE SHEETS ---
+# --- GOOGLE SHEETS CONNECTION ---
 def get_gspread_client():
     return gspread.service_account(filename='credentials.json')
 
@@ -201,14 +201,12 @@ def save_to_sheets(opportunities):
         sheet = client.open("Mural Opportunities Bot") 
         worksheet = sheet.worksheet("Opportunities")
     except Exception as e:
-        print(f"ERROR CRÍTICO SHEETS: {e}")
+        print(f"CRITICAL SHEETS ERROR: {e}")
         return []
 
     try:
         existing_records = worksheet.get_all_values()
         existing_links = set()
-        # Columna D (index 3) es link? No, en tu clase la URL es la M (index 12)
-        # Revisando tu .to_row(): A,B,C,D,E,F,G,H,I,J,K,L,M -> M es el link (índice 12)
         for row in existing_records[1:]:
             if len(row) > 12: existing_links.add(row[12]) 
     except:
@@ -225,41 +223,72 @@ def save_to_sheets(opportunities):
     
     if rows_to_add:
         worksheet.append_rows(rows_to_add)
-        print(f"✅ Guardadas {len(rows_to_add)} filas.")
+        print(f"✅ Saved {len(rows_to_add)} rows.")
     else:
-        print("No hay filas nuevas.")
+        print("No new rows found.")
     
     return new_items
 
-# --- EMAIL ---
+# --- IMPROVED EMAIL (ENGLISH) ---
 def send_email(new_items):
     sender = os.getenv("EMAIL_SENDER")
     password = os.getenv("EMAIL_PASSWORD")
     receivers_str = os.getenv("EMAIL_RECEIVER")
+    sheet_id = os.getenv("SHEET_ID") 
     
     if not sender or not password: 
-        print("⚠️ Faltan credenciales de email.")
+        print("⚠️ Missing email credentials.")
         return
 
     receivers = receivers_str.split(",")
     today_str = datetime.now(SC_TZ).strftime("%m/%d/%Y")
     
-    html = f"<h2>New CaFÉ Opportunities ({len(new_items)})</h2><hr>"
+    # Link to Sheet
+    sheet_link = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+    
+    # Header with Button
+    html = f"""
+    <h2 style="color:#2c3e50;">🎨 New CaFÉ Opportunities ({len(new_items)})</h2>
+    <p style="font-size:16px;">
+        👉 <a href="{sheet_link}" style="background-color:#27ae60; color:white; padding:10px 15px; text-decoration:none; border-radius:5px; font-weight:bold;">
+        OPEN GOOGLE SHEETS NOW
+        </a>
+    </p>
+    <hr>
+    """
+
+    # Item Loop (Max 20)
     for item in new_items[:20]: 
+        # Truncate long budgets
+        budget_short = item.budget
+        if len(budget_short) > 80:
+            budget_short = budget_short[:80] + "..."
+
         html += f"""
-        <div style="margin-bottom:15px; border-bottom:1px solid #ccc; padding-bottom:10px;">
-            <h3 style="margin:0;"><a href="{item.link}">{item.title}</a></h3>
-            <p style="margin:5px 0;">
-                💰 <b>Budget:</b> {item.budget} | 🎟️ <b>Fee:</b> {item.entry_fee}<br>
-                📅 <b>Deadline:</b> {item.deadline}
+        <div style="margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
+            <h3 style="margin:0; font-size:18px;"><a href="{item.link}" style="color:#2980b9; text-decoration:none;">{item.title}</a></h3>
+            <p style="margin:5px 0; color:#555;">
+                💰 <b>Budget:</b> {budget_short} <br>
+                🎟️ <b>Fee:</b> {item.entry_fee} | 📅 <b>Deadline:</b> {item.deadline}
             </p>
         </div>
+        """
+    
+    # Footer if > 20
+    if len(new_items) > 20:
+        remaining = len(new_items) - 20
+        html += f"""
+        <p style="margin-top:20px; color:#7f8c8d;">
+            ... plus <b>{remaining} more opportunities</b>. 
+            <br><br>
+            <a href="{sheet_link}">Click here to view the full list in Excel.</a>
+        </p>
         """
     
     msg = MIMEMultipart()
     msg['From'] = sender
     msg['To'] = ", ".join(receivers)
-    msg['Subject'] = f"🎨 CaFÉ Alert - {today_str}"
+    msg['Subject'] = f"🎨 CaFÉ Alert ({len(new_items)}) - {today_str}"
     msg.attach(MIMEText(html, 'html'))
 
     try:
@@ -268,9 +297,9 @@ def send_email(new_items):
         server.login(sender, password)
         server.sendmail(sender, receivers, msg.as_string())
         server.quit()
-        print("📧 Email enviado.")
+        print("📧 Email sent with Sheet link.")
     except Exception as e:
-        print(f"Error Email: {e}")
+        print(f"Email Error: {e}")
 
 if __name__ == "__main__":
     ops = run_scrapers()

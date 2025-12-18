@@ -2,40 +2,45 @@ name: Bot Arte Completo
 
 on:
   schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+    # Ejecutar a las 14:00 UTC (9:00 AM EST) solo los Lunes (1)
+    - cron: '0 14 * * 1'
+  workflow_dispatch: # Botón manual
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Instalar todo
+      - name: Instalar dependencias
         run: |
           pip install -r requirements.txt
           playwright install chromium
           playwright install-deps
 
-      # PASO CLAVE: Crear credentials.json desde el secreto de GitHub
       - name: Crear credentials.json
         env:
           GOOGLE_JSON: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: echo "$GOOGLE_JSON" > credentials.json
 
-      # PASO CLAVE 2: Crear .env desde los secretos de GitHub
-      - name: Crear .env
+      - name: Crear archivo .env
         env:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
         run: |
           echo "EMAIL_SENDER=$EMAIL_SENDER" >> .env
           echo "EMAIL_PASSWORD=$EMAIL_PASSWORD" >> .env
           echo "EMAIL_RECEIVER=$EMAIL_RECEIVER" >> .env
+          echo "SHEET_ID=$SHEET_ID" >> .env
 
-      - name: Ejecutar bot
+      - name: Correr Scraper
         run: python main.py
