@@ -1,0 +1,41 @@
+name: Bot Arte Completo
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalar todo
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps
+
+      # PASO CLAVE: Crear credentials.json desde el secreto de GitHub
+      - name: Crear credentials.json
+        env:
+          GOOGLE_JSON: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: echo "$GOOGLE_JSON" > credentials.json
+
+      # PASO CLAVE 2: Crear .env desde los secretos de GitHub
+      - name: Crear .env
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+        run: |
+          echo "EMAIL_SENDER=$EMAIL_SENDER" >> .env
+          echo "EMAIL_PASSWORD=$EMAIL_PASSWORD" >> .env
+          echo "EMAIL_RECEIVER=$EMAIL_RECEIVER" >> .env
+
+      - name: Ejecutar bot
+        run: python main.py
