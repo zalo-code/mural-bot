@@ -35,7 +35,7 @@ class Opportunity:
             clean_text(self.deadline),       # A
             today,                           # B
             clean_text(self.title),          # C
-            clean_text(self.org),            # D
+            clean_text(self.org),            # D - AHORA SERÁ PERFECTO
             clean_text(self.city),           # E
             clean_text(self.state),          # F
             "Public Art",                    # G
@@ -85,7 +85,7 @@ def extract_keywords(text):
 def run_scrapers():
     opportunities = []
     with sync_playwright() as p:
-        print("--- 🚀 STARTING CRAWLER (CAFÉ) ---")
+        print("--- 🚀 STARTING CRAWLER (CAFÉ) - UPDATED LOGIC ---")
         browser = p.chromium.launch(headless=True) 
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         context.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,gif}", lambda route: route.abort())
@@ -129,38 +129,54 @@ def run_scrapers():
                         header_elem = page.query_selector(".header_text")
                         if header_elem: title = header_elem.inner_text().strip()
 
-                    # --- ADVANCED ORGANIZATION LOGIC ---
+                    # ============================================================
+                    # 🔥 NUEVA LÓGICA DE ORGANIZACIÓN "PERFECTA" 🔥
+                    # ============================================================
                     org = ""
                     
-                    # 1. Look for "Presented by"
-                    match_org = re.search(r'Presented by\s*[:\-]?\s*(.*?)(?:\n|$|\.)', full_body, re.IGNORECASE)
-                    
-                    if match_org: 
-                        org = match_org.group(1).strip()
-                    else:
-                        # 2. Look for "The [Org] invites/seeks..." (ignoring clauses between commas)
-                        # This catches: "The City of Greenwood Village, in partnership with X, invites..."
-                        match_invite = re.search(r'(?:The|This)\s+([A-Z][a-z0-9\s\.,&]+?)(?:,.*?)?\s+(?:invites|seeks|requests|is accepting|announces)', full_body)
-                        if match_invite and len(match_invite.group(1)) < 60:
-                            org = match_invite.group(1).strip()
-                        else:
-                            # 3. Check if Title is "Org Name: Project Name"
-                            if ":" in title:
-                                possible_org = title.split(":")[0].strip()
-                                # Simple check: usually Org names are shorter than project descriptions
-                                if len(possible_org) < 50 and "Call" not in possible_org:
-                                    org = possible_org
+                    # 1. ESTRATEGIA MAESTRA: El Título de la Pestaña (HTML <title>)
+                    # Formato habitual en CaFÉ: "Nombre Proyecto - Nombre Organización - CaFÉ"
+                    # Esto es infalible porque viene limpio de base de datos.
+                    page_tab_title = page.title()
+                    if "-" in page_tab_title:
+                        parts = page_tab_title.split("-")
+                        if len(parts) >= 2:
+                            # Suele ser el penúltimo elemento (antes de CaFÉ)
+                            possible_org = parts[-2].strip()
+                            # Filtros de seguridad
+                            if "CaFÉ" not in possible_org and len(possible_org) > 2 and "Call for" not in possible_org:
+                                org = possible_org
 
-                    # 4. Last Resort: Email Domain (Cleaned)
-                    if not org or len(org) > 60:
+                    # 2. ESTRATEGIA VISUAL: Buscar bloque de contacto
+                    # Si falla el título, buscamos el email y miramos quién está encima.
+                    if not org:
+                        # Buscamos el enlace mailto
+                        email_el = page.query_selector("a[href^='mailto:']")
+                        if email_el:
+                            # Obtenemos el texto del contenedor padre (TD o DIV)
+                            container_text = email_el.evaluate("el => el.parentElement.innerText")
+                            lines = [line.strip() for line in container_text.split('\n') if line.strip()]
+                            
+                            for line in lines:
+                                # La primera línea que NO sea el email ni labels suele ser la Org
+                                if "@" not in line and "Contact" not in line and "Phone" not in line and "Inquiries" not in line:
+                                    if len(line) < 80: # Evitar frases largas erróneas
+                                        org = line
+                                        break
+                    
+                    # 3. ESTRATEGIA FALLBACK: Dominio del Email (Mejorada)
+                    # Solo si todo lo anterior falla (muy raro)
+                    if not org:
                         match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
                         if match_email:
                             d = match_email.group(1)
                             if "gmail" not in d and "yahoo" not in d:
-                                # Clean domain: "greenwoodvillage.com" -> "Greenwood Village"
                                 raw_domain = d.split('.')[0]
-                                # Add spaces before capitals if they exist, or capitalize title
-                                org = re.sub(r"(\w)([A-Z])", r"\1 \2", raw_domain).title()
+                                # Convertir "cityofkeller" en "City Of Keller"
+                                org = re.sub(r"(\w)([A-Z])", r"\1 \2", raw_domain) # Separar CamelCase existente
+                                org = org.title() # Poner mayúsculas bonitas
+
+                    # ============================================================
 
                     # --- FIXED STATE LOGIC ---
                     state = ""
@@ -175,12 +191,6 @@ def run_scrapers():
                         if state:
                             match_loc = re.search(r'in\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)?),?\s*' + re.escape(state), full_body)
                             if match_loc: city = match_loc.group(1).strip()
-                            else:
-                                match_loc_gen = re.search(r'located\s+(?:in|at)\s+([A-Z][a-z]+(?:[\s][A-Z][a-z]+)?)', full_body)
-                                if match_loc_gen:
-                                    possible_city = match_loc_gen.group(1).strip()
-                                    if len(possible_city) > 2 and possible_city not in ["The", "This", "Smith", "Site"]:
-                                        city = possible_city
 
                     budget = "N/A"
                     raw_match = re.search(r'(?:^|\n)\s*Budget\s*:\s*(.*?)(?:\n|$)', full_body, re.IGNORECASE)
@@ -206,7 +216,7 @@ def run_scrapers():
                     numeric_val = extract_budget_numeric(budget)
                     if numeric_val < 3000: continue
 
-                    print(f"✅ [{i+1}] {title[:30]}... | Org: {org[:20]}... | ${numeric_val}")
+                    print(f"✅ [{i+1}] {title[:30]}... | Org: {org} | ${numeric_val}")
                     opportunities.append(Opportunity(title, org, city, state, "", link, deadline, entry_fee, budget, eligibility, keywords, "CaFÉ", cafe_id))
 
                 except Exception as e:
