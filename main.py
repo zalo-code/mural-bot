@@ -14,7 +14,7 @@ load_dotenv()
 SC_TZ = pytz.timezone('America/New_York')
 
 # ==============================================================================
-# 1. DICCIONARIO MAESTRO (SOLUCIÓN PARA ERRORES HISTÓRICOS CONOCIDOS)
+# 1. DICCIONARIO MAESTRO (SOLUCIÓN PARA ERRORES HISTÓRICOS DE ORGANIZACIÓN)
 # ==============================================================================
 KNOWN_CORRECTIONS = {
     "slc": "Salt Lake City Arts Council",
@@ -23,7 +23,7 @@ KNOWN_CORRECTIONS = {
     "ssprd": "South Suburban Parks and Recreation",
     "arts": "Rhode Island State Council on the Arts",
     "akt-artful": "Florida State University (Art in State Buildings)",
-    "artist must direct all": "City of Greenwood Village", # Arreglo fila 34
+    "artist must direct all": "City of Greenwood Village",
     "cityofkeller": "City of Keller",
     "ahhaa": "Ah Haa School for the Arts",
     "millcreekut": "Millcreek City",
@@ -48,7 +48,7 @@ KNOWN_CORRECTIONS = {
 # 2. CLASE OPPORTUNITY
 # ==============================================================================
 class Opportunity:
-    def __init__(self, title, org, city, state, description, link, deadline, entry_fee, budget, eligibility, keywords, source, cafe_id):
+    def __init__(self, title, org, city, state, description, link, deadline, entry_fee, budget, eligibility, keywords, source, cafe_id, project_type):
         self.title = title
         self.org = org
         self.city = city
@@ -62,6 +62,7 @@ class Opportunity:
         self.keywords = keywords
         self.source = source
         self.cafe_id = cafe_id
+        self.project_type = project_type # <--- NUEVO CAMPO DINÁMICO
 
     def to_row(self):
         today = datetime.now().strftime("%Y-%m-%d")
@@ -69,10 +70,10 @@ class Opportunity:
             clean_text(self.deadline),       # A
             today,                           # B
             clean_text(self.title),          # C
-            clean_text(self.org),            # D (ESTA ES LA CLAVE)
+            clean_text(self.org),            # D
             clean_text(self.city),           # E
             clean_text(self.state),          # F
-            "Public Art",                    # G
+            clean_text(self.project_type),   # G <--- YA NO ES FIJO
             clean_text(self.budget),         # H
             clean_text(self.entry_fee),      # I
             clean_text(self.eligibility),    # J
@@ -106,7 +107,8 @@ def extract_keywords(text):
     keywords_list = [
         "mural", "sculpture", "installation", "interactive", "kinetic", 
         "bronze", "mosaic", "glass", "steel", "monument", "memorial",
-        "terrazzo", "lighting", "landscape", "community", "residency"
+        "terrazzo", "lighting", "landscape", "community", "residency",
+        "photography", "painting", "festival"
     ]
     found = set()
     text_lower = text.lower()
@@ -116,12 +118,47 @@ def extract_keywords(text):
     return ", ".join(sorted(found))
 
 # ==============================================================================
-# 3. SCRAPER INTELIGENTE (LOGICA HÍBRIDA)
+# 🔥 NUEVA LÓGICA: DETERMINAR TIPO DE PROYECTO DINÁMICAMENTE
+# ==============================================================================
+def determine_project_type(title, body, keywords):
+    t_lower = title.lower()
+    b_lower = body.lower()
+    k_lower = keywords.lower()
+    
+    # 1. Detectar si es RFQ o RFP (Prioridad de Sufijo)
+    suffix = ""
+    if "rfq" in t_lower or "qualifications" in t_lower: suffix = " (RFQ)"
+    elif "rfp" in t_lower or "proposals" in t_lower: suffix = " (RFP)"
+
+    # 2. Clasificación por Título (Prioridad Máxima)
+    if "mural" in t_lower: return "Mural" + suffix
+    if "sculpture" in t_lower or "statue" in t_lower: return "Sculpture" + suffix
+    if "residency" in t_lower or "resident" in t_lower: return "Residency"
+    if "festival" in t_lower: return "Festival/Event"
+    if "installation" in t_lower: return "Installation" + suffix
+    if "mosaic" in t_lower: return "Mosaic" + suffix
+    if "glass" in t_lower: return "Glass Art" + suffix
+    if "memorial" in t_lower or "monument" in t_lower: return "Memorial/Monument" + suffix
+    if "photography" in t_lower or "photo" in t_lower: return "Photography"
+
+    # 3. Clasificación por Keywords (Si el título es genérico como "Call for Art")
+    if "mural" in k_lower: return "Mural" + suffix
+    if "sculpture" in k_lower: return "Sculpture" + suffix
+    if "installation" in k_lower: return "Installation" + suffix
+    
+    # 4. Clasificación por Cuerpo del Texto (Búsqueda específica)
+    if "muralist" in b_lower: return "Mural" + suffix
+    
+    # 5. Fallback Genérico
+    return "Public Art" + suffix
+
+# ==============================================================================
+# 3. SCRAPER INTELIGENTE
 # ==============================================================================
 def run_scrapers():
     opportunities = []
     with sync_playwright() as p:
-        print("--- 🚀 STARTING PERFECT SCRAPER (CAFÉ) ---")
+        print("--- 🚀 STARTING SCRAPER (Dynamic Types + Org Fix) ---")
         browser = p.chromium.launch(headless=True) 
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         context.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,gif}", lambda route: route.abort())
@@ -131,7 +168,6 @@ def run_scrapers():
             print("Loading list...")
             page.goto("https://artist.callforentry.org/festivals.php", timeout=60000)
             
-            # Esperar a que cargue la lista
             try:
                 page.wait_for_selector("a[href*='festivals_unique_info.php']", timeout=10000)
             except:
@@ -139,7 +175,6 @@ def run_scrapers():
                 browser.close()
                 return []
             
-            # Recoger todos los enlaces
             links_elements = page.query_selector_all("a[href*='festivals_unique_info.php']")
             detail_links = []
             seen = set()
@@ -151,80 +186,52 @@ def run_scrapers():
                         seen.add(url)
                         detail_links.append(url)
             
-            print(f"--> Found {len(detail_links)} links. Auditing ALL...")
+            print(f"--> Found {len(detail_links)} links. Processing...")
 
-            # BUCLE PRINCIPAL
             for i, link in enumerate(detail_links):
                 try:
                     cafe_id = link.split("ID=")[-1]
                     page.goto(link, timeout=20000, wait_until='domcontentloaded')
                     full_body = page.inner_text("body")
 
-                    # Título del Proyecto
                     title = "Untitled"
                     title_elem = page.query_selector("div.fairname")
                     if title_elem:
                         raw_title = title_elem.inner_text()
                         title = raw_title.split('\n')[0].strip()
 
-                    # ========================================================
-                    # 💡 LÓGICA MAESTRA PARA "ORGANIZATION"
-                    # ========================================================
+                    # --- LÓGICA DE ORGANIZACIÓN (MANTENIDA DEL ÚLTIMO FIX) ---
                     org = ""
-                    strategy = ""
-
-                    # Paso A: Obtener el "slug" del email como referencia (ej: 'cityofkeller')
-                    # Esto nos sirve para comparar con el Diccionario
                     match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
                     org_slug = ""
                     if match_email:
                         d = match_email.group(1)
-                        if "gmail" not in d and "yahoo" not in d:
-                            org_slug = d.split('.')[0]
+                        if "gmail" not in d and "yahoo" not in d: org_slug = d.split('.')[0]
 
-                    # 1. ESTRATEGIA DICCIONARIO (Prioridad Máxima - Arregla el Pasado)
-                    # Comprobamos si el slug o el título contienen errores conocidos
                     if org_slug.lower() in KNOWN_CORRECTIONS:
                         org = KNOWN_CORRECTIONS[org_slug.lower()]
-                        strategy = "Dictionary"
                     
-                    # 2. ESTRATEGIA TÍTULO DE PESTAÑA (Prioridad Futura - Para Nuevos)
-                    # El formato suele ser: "Nombre Proyecto - Nombre Organización - CaFÉ"
                     if not org:
                         page_tab_title = page.title()
                         if "-" in page_tab_title:
                             parts = page_tab_title.split("-")
                             if len(parts) >= 2:
                                 possible_org = parts[-2].strip()
-                                # Filtros de seguridad para no coger basura
                                 if "CaFÉ" not in possible_org and len(possible_org) > 2 and "Call for" not in possible_org:
                                     org = possible_org
-                                    strategy = "Page Title (Perfect)"
 
-                    # 3. ESTRATEGIA VISUAL (Fallback - Busca 'Presented by')
                     if not org:
                         match_by = re.search(r'Presented by\s*[:\-]?\s*([A-Z][\w\s\.,&]+)', full_body, re.IGNORECASE)
                         if match_by:
                             cleaned = match_by.group(1).split('\n')[0]
-                            if len(cleaned) < 60:
-                                org = cleaned.strip()
-                                strategy = "Presented By"
+                            if len(cleaned) < 60: org = cleaned.strip()
 
-                    # 4. ESTRATEGIA SLUG LIMPIO (Último Recurso)
-                    # Convierte "cityofkeller" -> "City Of Keller"
                     if not org and org_slug:
-                        # Separa CamelCase y pone mayúsculas
-                        org = re.sub(r"(\w)([A-Z])", r"\1 \2", org_slug)
-                        org = org.title()
-                        strategy = "Slug Cleaned"
+                        org = re.sub(r"(\w)([A-Z])", r"\1 \2", org_slug).title()
 
-                    # Fallback final por si acaso
-                    if not org or len(org) > 60:
-                        org = "Unknown Organization"
+                    if not org or len(org) > 60: org = "Unknown Organization"
+                    # ---------------------------------------------------------
 
-                    # ========================================================
-
-                    # --- RESTO DE CAMPOS (IGUAL QUE ANTES) ---
                     state = ""
                     match_state = re.search(r'State:\s*(.*?)(?:\s+Budget|\n|$)', full_body, re.IGNORECASE)
                     if match_state: state = match_state.group(1).strip()
@@ -256,13 +263,18 @@ def run_scrapers():
                     if e_match: eligibility = e_match.group(1).strip()
                     
                     keywords = extract_keywords(full_body)
+                    
+                    # 🔥 DETERMINAR TIPO DE PROYECTO DINÁMICO 🔥
+                    project_type = determine_project_type(title, full_body, keywords)
 
                     if budget == "N/A": continue
                     numeric_val = extract_budget_numeric(budget)
                     if numeric_val < 3000: continue
 
-                    print(f"✅ [{i+1}] Org: {org} (Via {strategy}) | Budget: ${numeric_val}")
-                    opportunities.append(Opportunity(title, org, city, state, "", link, deadline, entry_fee, budget, eligibility, keywords, "CaFÉ", cafe_id))
+                    print(f"✅ [{i+1}] Type: {project_type} | Org: {org} | {title[:20]}...")
+                    
+                    # Pasamos el nuevo campo project_type al constructor
+                    opportunities.append(Opportunity(title, org, city, state, "", link, deadline, entry_fee, budget, eligibility, keywords, "CaFÉ", cafe_id, project_type))
 
                 except Exception as e:
                     print(f"[{i+1}] Error: {e}")
@@ -287,16 +299,13 @@ def save_to_sheets(opportunities):
         print(f"CRITICAL SHEETS ERROR: {e}")
         return []
 
-    # Leemos todo para mapear URLs a Números de Fila
     try:
         all_values = worksheet.get_all_values()
         url_to_row_map = {}
-        # Asumiendo que la columna 12 (índice 12, columna M) es Source URL
         for idx, row in enumerate(all_values):
             if len(row) > 12: 
                 url_val = row[12]
                 if "http" in url_val:
-                    # Guardamos fila (idx + 1 porque Sheets empieza en 1)
                     url_to_row_map[url_val] = idx + 1 
     except:
         url_to_row_map = {}
@@ -311,14 +320,13 @@ def save_to_sheets(opportunities):
             # --- SI YA EXISTE: ACTUALIZAR ---
             row_num = url_to_row_map[op.link]
             
-            # Actualizamos SOLO la celda de Organization (Columna D = 4)
-            # Esto arregla los errores antiguos como 'Slc' o 'Artist must direct all'
+            # Actualizamos Organization (Columna D = 4)
             worksheet.update_cell(row_num, 4, op.org)
             
-            # Opcional: Actualizar Budget también por si acaso (Columna H = 8)
-            # worksheet.update_cell(row_num, 8, op.budget)
+            # 🔥 Actualizamos TAMBIÉN Project Type (Columna G = 7)
+            worksheet.update_cell(row_num, 7, op.project_type)
             
-            # print(f"🔄 Updated Row {row_num} with Organization: {op.org}")
+            # print(f"🔄 Updated Row {row_num}: Org & Type fixed.")
         else:
             # --- SI ES NUEVO: AÑADIR ---
             rows_to_add.append(op.to_row())
@@ -364,7 +372,7 @@ def send_email(new_items):
         <div style="margin-bottom:15px; border-bottom:1px solid #eee;">
             <h3 style="margin:0;"><a href="{item.link}">{item.title}</a></h3>
             <p style="margin:5px 0; color:#555;">
-                <b>{item.org}</b> <br>
+                <b>{item.org}</b> ({item.project_type})<br>
                 💰 {item.budget} | 📅 {item.deadline}
             </p>
         </div>
