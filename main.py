@@ -129,27 +129,41 @@ def run_scrapers():
                         header_elem = page.query_selector(".header_text")
                         if header_elem: title = header_elem.inner_text().strip()
 
-                    # --- FIXED ORGANIZATION LOGIC ---
+                    # --- ADVANCED ORGANIZATION LOGIC ---
                     org = ""
-                    # 1. Try "Presented by"
+                    
+                    # 1. Look for "Presented by"
                     match_org = re.search(r'Presented by\s*[:\-]?\s*(.*?)(?:\n|$|\.)', full_body, re.IGNORECASE)
+                    
                     if match_org: 
                         org = match_org.group(1).strip()
                     else:
-                        # 2. Try "The X invites/seeks" (Plan B for Greenwood Village cases)
-                        match_invite = re.search(r'(?:The|This)\s+([A-Z][a-z0-9\s\.,&]+?)\s+(?:invites|seeks|requests|is accepting)', full_body)
-                        if match_invite and len(match_invite.group(1)) < 50:
+                        # 2. Look for "The [Org] invites/seeks..." (ignoring clauses between commas)
+                        # This catches: "The City of Greenwood Village, in partnership with X, invites..."
+                        match_invite = re.search(r'(?:The|This)\s+([A-Z][a-z0-9\s\.,&]+?)(?:,.*?)?\s+(?:invites|seeks|requests|is accepting|announces)', full_body)
+                        if match_invite and len(match_invite.group(1)) < 60:
                             org = match_invite.group(1).strip()
                         else:
-                            # 3. Fallback to email domain (Last Resort)
-                            match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
-                            if match_email:
-                                d = match_email.group(1)
-                                if "gmail" not in d: org = d.split('.')[0].capitalize()
+                            # 3. Check if Title is "Org Name: Project Name"
+                            if ":" in title:
+                                possible_org = title.split(":")[0].strip()
+                                # Simple check: usually Org names are shorter than project descriptions
+                                if len(possible_org) < 50 and "Call" not in possible_org:
+                                    org = possible_org
+
+                    # 4. Last Resort: Email Domain (Cleaned)
+                    if not org or len(org) > 60:
+                        match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
+                        if match_email:
+                            d = match_email.group(1)
+                            if "gmail" not in d and "yahoo" not in d:
+                                # Clean domain: "greenwoodvillage.com" -> "Greenwood Village"
+                                raw_domain = d.split('.')[0]
+                                # Add spaces before capitals if they exist, or capitalize title
+                                org = re.sub(r"(\w)([A-Z])", r"\1 \2", raw_domain).title()
 
                     # --- FIXED STATE LOGIC ---
                     state = ""
-                    # Stop capturing at "Budget" or Newline
                     match_state = re.search(r'State:\s*(.*?)(?:\s+Budget|\n|$)', full_body, re.IGNORECASE)
                     if match_state: 
                         state = match_state.group(1).strip()
@@ -192,7 +206,7 @@ def run_scrapers():
                     numeric_val = extract_budget_numeric(budget)
                     if numeric_val < 3000: continue
 
-                    print(f"✅ [{i+1}] {title[:30]}... | ${numeric_val}")
+                    print(f"✅ [{i+1}] {title[:30]}... | Org: {org[:20]}... | ${numeric_val}")
                     opportunities.append(Opportunity(title, org, city, state, "", link, deadline, entry_fee, budget, eligibility, keywords, "CaFÉ", cafe_id))
 
                 except Exception as e:
