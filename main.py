@@ -129,18 +129,30 @@ def run_scrapers():
                         header_elem = page.query_selector(".header_text")
                         if header_elem: title = header_elem.inner_text().strip()
 
+                    # --- FIXED ORGANIZATION LOGIC ---
                     org = ""
+                    # 1. Try "Presented by"
                     match_org = re.search(r'Presented by\s*[:\-]?\s*(.*?)(?:\n|$|\.)', full_body, re.IGNORECASE)
-                    if match_org: org = match_org.group(1).strip()
+                    if match_org: 
+                        org = match_org.group(1).strip()
                     else:
-                        match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
-                        if match_email:
-                            d = match_email.group(1)
-                            if "gmail" not in d: org = d.split('.')[0].capitalize()
+                        # 2. Try "The X invites/seeks" (Plan B for Greenwood Village cases)
+                        match_invite = re.search(r'(?:The|This)\s+([A-Z][a-z0-9\s\.,&]+?)\s+(?:invites|seeks|requests|is accepting)', full_body)
+                        if match_invite and len(match_invite.group(1)) < 50:
+                            org = match_invite.group(1).strip()
+                        else:
+                            # 3. Fallback to email domain (Last Resort)
+                            match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
+                            if match_email:
+                                d = match_email.group(1)
+                                if "gmail" not in d: org = d.split('.')[0].capitalize()
 
+                    # --- FIXED STATE LOGIC ---
                     state = ""
-                    match_state = re.search(r'State:\s*([A-Za-z\s]+)', full_body, re.IGNORECASE)
-                    if match_state: state = match_state.group(1).strip()
+                    # Stop capturing at "Budget" or Newline
+                    match_state = re.search(r'State:\s*(.*?)(?:\s+Budget|\n|$)', full_body, re.IGNORECASE)
+                    if match_state: 
+                        state = match_state.group(1).strip()
 
                     city = ""
                     match_city = re.search(r'City:\s*([A-Za-z\s\.]+)', full_body, re.IGNORECASE)
@@ -229,7 +241,7 @@ def save_to_sheets(opportunities):
     
     return new_items
 
-# --- IMPROVED EMAIL (ENGLISH) ---
+# --- EMAIL LOGIC (ENGLISH) ---
 def send_email(new_items):
     sender = os.getenv("EMAIL_SENDER")
     password = os.getenv("EMAIL_PASSWORD")
@@ -243,10 +255,8 @@ def send_email(new_items):
     receivers = receivers_str.split(",")
     today_str = datetime.now(SC_TZ).strftime("%m/%d/%Y")
     
-    # Link to Sheet
     sheet_link = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
     
-    # Header with Button
     html = f"""
     <h2 style="color:#2c3e50;">🎨 New CaFÉ Opportunities ({len(new_items)})</h2>
     <p style="font-size:16px;">
@@ -257,9 +267,7 @@ def send_email(new_items):
     <hr>
     """
 
-    # Item Loop (Max 20)
     for item in new_items[:20]: 
-        # Truncate long budgets
         budget_short = item.budget
         if len(budget_short) > 80:
             budget_short = budget_short[:80] + "..."
@@ -274,7 +282,6 @@ def send_email(new_items):
         </div>
         """
     
-    # Footer if > 20
     if len(new_items) > 20:
         remaining = len(new_items) - 20
         html += f"""
@@ -288,7 +295,7 @@ def send_email(new_items):
     msg = MIMEMultipart()
     msg['From'] = sender
     msg['To'] = ", ".join(receivers)
-    msg['Subject'] = f"🎨 CaFÉ Alert ({len(new_items)}) - {today_str}"
+    msg['Subject'] = f"Weekly Opportunities Report - {today_str}"
     msg.attach(MIMEText(html, 'html'))
 
     try:
@@ -297,7 +304,7 @@ def send_email(new_items):
         server.login(sender, password)
         server.sendmail(sender, receivers, msg.as_string())
         server.quit()
-        print("📧 Email sent with Sheet link.")
+        print("📧 Email sent.")
     except Exception as e:
         print(f"Email Error: {e}")
 
