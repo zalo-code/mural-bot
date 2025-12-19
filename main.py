@@ -9,10 +9,44 @@ from datetime import datetime
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
+# Carga variables de entorno
 load_dotenv()
 SC_TZ = pytz.timezone('America/New_York')
 
-# --- OPPORTUNITY CLASS ---
+# ==============================================================================
+# 1. DICCIONARIO MAESTRO (SOLUCIÓN PARA ERRORES HISTÓRICOS CONOCIDOS)
+# ==============================================================================
+KNOWN_CORRECTIONS = {
+    "slc": "Salt Lake City Arts Council",
+    "gcac": "Greater Columbus Arts Council",
+    "dca": "New Mexico Dept. of Cultural Affairs",
+    "ssprd": "South Suburban Parks and Recreation",
+    "arts": "Rhode Island State Council on the Arts",
+    "akt-artful": "Florida State University (Art in State Buildings)",
+    "artist must direct all": "City of Greenwood Village", # Arreglo fila 34
+    "cityofkeller": "City of Keller",
+    "ahhaa": "Ah Haa School for the Arts",
+    "millcreekut": "Millcreek City",
+    "ofallonmo": "City of O'Fallon",
+    "swiftel": "Swiftel Center",
+    "palmettobay-fl": "Village of Palmetto Bay",
+    "alleganyarts": "Allegany Arts Council",
+    "bluelinearts": "Blue Line Arts",
+    "stagvillememorialproject": "The Stagville Memorial Project",
+    "highdesertmuseum": "High Desert Museum",
+    "artworkscincinnati": "ArtWorks Cincinnati",
+    "msstate": "Mississippi State University",
+    "sfsarch": "City of Wichita (SFS Architecture)",
+    "landworksstudio": "City of Wichita (Landworks Studio)",
+    "louisvilleco": "City of Louisville (CO)",
+    "ocfl": "Orange County (FL)",
+    "greenefellowship": "The Greene Fellowship",
+    "city of denver": "Denver Arts & Venues"
+}
+
+# ==============================================================================
+# 2. CLASE OPPORTUNITY
+# ==============================================================================
 class Opportunity:
     def __init__(self, title, org, city, state, description, link, deadline, entry_fee, budget, eligibility, keywords, source, cafe_id):
         self.title = title
@@ -35,7 +69,7 @@ class Opportunity:
             clean_text(self.deadline),       # A
             today,                           # B
             clean_text(self.title),          # C
-            clean_text(self.org),            # D - AHORA SERÁ PERFECTO
+            clean_text(self.org),            # D (ESTA ES LA CLAVE)
             clean_text(self.city),           # E
             clean_text(self.state),          # F
             "Public Art",                    # G
@@ -81,11 +115,13 @@ def extract_keywords(text):
             found.add(kw)
     return ", ".join(sorted(found))
 
-# --- SCRAPER (PLAYWRIGHT LOGIC) ---
+# ==============================================================================
+# 3. SCRAPER INTELIGENTE (LOGICA HÍBRIDA)
+# ==============================================================================
 def run_scrapers():
     opportunities = []
     with sync_playwright() as p:
-        print("--- 🚀 STARTING CRAWLER (CAFÉ) - UPDATED LOGIC ---")
+        print("--- 🚀 STARTING PERFECT SCRAPER (CAFÉ) ---")
         browser = p.chromium.launch(headless=True) 
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         context.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,gif}", lambda route: route.abort())
@@ -94,6 +130,8 @@ def run_scrapers():
         try:
             print("Loading list...")
             page.goto("https://artist.callforentry.org/festivals.php", timeout=60000)
+            
+            # Esperar a que cargue la lista
             try:
                 page.wait_for_selector("a[href*='festivals_unique_info.php']", timeout=10000)
             except:
@@ -101,6 +139,7 @@ def run_scrapers():
                 browser.close()
                 return []
             
+            # Recoger todos los enlaces
             links_elements = page.query_selector_all("a[href*='festivals_unique_info.php']")
             detail_links = []
             seen = set()
@@ -112,77 +151,83 @@ def run_scrapers():
                         seen.add(url)
                         detail_links.append(url)
             
-            print(f"--> Found {len(detail_links)} links.")
+            print(f"--> Found {len(detail_links)} links. Auditing ALL...")
 
+            # BUCLE PRINCIPAL
             for i, link in enumerate(detail_links):
                 try:
                     cafe_id = link.split("ID=")[-1]
                     page.goto(link, timeout=20000, wait_until='domcontentloaded')
                     full_body = page.inner_text("body")
 
+                    # Título del Proyecto
                     title = "Untitled"
                     title_elem = page.query_selector("div.fairname")
                     if title_elem:
                         raw_title = title_elem.inner_text()
                         title = raw_title.split('\n')[0].strip()
-                    if title == "Untitled" or "CaFÉ" == title:
-                        header_elem = page.query_selector(".header_text")
-                        if header_elem: title = header_elem.inner_text().strip()
 
-                    # ============================================================
-                    # 🔥 NUEVA LÓGICA DE ORGANIZACIÓN "PERFECTA" 🔥
-                    # ============================================================
+                    # ========================================================
+                    # 💡 LÓGICA MAESTRA PARA "ORGANIZATION"
+                    # ========================================================
                     org = ""
+                    strategy = ""
+
+                    # Paso A: Obtener el "slug" del email como referencia (ej: 'cityofkeller')
+                    # Esto nos sirve para comparar con el Diccionario
+                    match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
+                    org_slug = ""
+                    if match_email:
+                        d = match_email.group(1)
+                        if "gmail" not in d and "yahoo" not in d:
+                            org_slug = d.split('.')[0]
+
+                    # 1. ESTRATEGIA DICCIONARIO (Prioridad Máxima - Arregla el Pasado)
+                    # Comprobamos si el slug o el título contienen errores conocidos
+                    if org_slug.lower() in KNOWN_CORRECTIONS:
+                        org = KNOWN_CORRECTIONS[org_slug.lower()]
+                        strategy = "Dictionary"
                     
-                    # 1. ESTRATEGIA MAESTRA: El Título de la Pestaña (HTML <title>)
-                    # Formato habitual en CaFÉ: "Nombre Proyecto - Nombre Organización - CaFÉ"
-                    # Esto es infalible porque viene limpio de base de datos.
-                    page_tab_title = page.title()
-                    if "-" in page_tab_title:
-                        parts = page_tab_title.split("-")
-                        if len(parts) >= 2:
-                            # Suele ser el penúltimo elemento (antes de CaFÉ)
-                            possible_org = parts[-2].strip()
-                            # Filtros de seguridad
-                            if "CaFÉ" not in possible_org and len(possible_org) > 2 and "Call for" not in possible_org:
-                                org = possible_org
-
-                    # 2. ESTRATEGIA VISUAL: Buscar bloque de contacto
-                    # Si falla el título, buscamos el email y miramos quién está encima.
+                    # 2. ESTRATEGIA TÍTULO DE PESTAÑA (Prioridad Futura - Para Nuevos)
+                    # El formato suele ser: "Nombre Proyecto - Nombre Organización - CaFÉ"
                     if not org:
-                        # Buscamos el enlace mailto
-                        email_el = page.query_selector("a[href^='mailto:']")
-                        if email_el:
-                            # Obtenemos el texto del contenedor padre (TD o DIV)
-                            container_text = email_el.evaluate("el => el.parentElement.innerText")
-                            lines = [line.strip() for line in container_text.split('\n') if line.strip()]
-                            
-                            for line in lines:
-                                # La primera línea que NO sea el email ni labels suele ser la Org
-                                if "@" not in line and "Contact" not in line and "Phone" not in line and "Inquiries" not in line:
-                                    if len(line) < 80: # Evitar frases largas erróneas
-                                        org = line
-                                        break
-                    
-                    # 3. ESTRATEGIA FALLBACK: Dominio del Email (Mejorada)
-                    # Solo si todo lo anterior falla (muy raro)
+                        page_tab_title = page.title()
+                        if "-" in page_tab_title:
+                            parts = page_tab_title.split("-")
+                            if len(parts) >= 2:
+                                possible_org = parts[-2].strip()
+                                # Filtros de seguridad para no coger basura
+                                if "CaFÉ" not in possible_org and len(possible_org) > 2 and "Call for" not in possible_org:
+                                    org = possible_org
+                                    strategy = "Page Title (Perfect)"
+
+                    # 3. ESTRATEGIA VISUAL (Fallback - Busca 'Presented by')
                     if not org:
-                        match_email = re.search(r'Contact Email:\s*.*?@([\w\.\-]+)', full_body, re.IGNORECASE)
-                        if match_email:
-                            d = match_email.group(1)
-                            if "gmail" not in d and "yahoo" not in d:
-                                raw_domain = d.split('.')[0]
-                                # Convertir "cityofkeller" en "City Of Keller"
-                                org = re.sub(r"(\w)([A-Z])", r"\1 \2", raw_domain) # Separar CamelCase existente
-                                org = org.title() # Poner mayúsculas bonitas
+                        match_by = re.search(r'Presented by\s*[:\-]?\s*([A-Z][\w\s\.,&]+)', full_body, re.IGNORECASE)
+                        if match_by:
+                            cleaned = match_by.group(1).split('\n')[0]
+                            if len(cleaned) < 60:
+                                org = cleaned.strip()
+                                strategy = "Presented By"
 
-                    # ============================================================
+                    # 4. ESTRATEGIA SLUG LIMPIO (Último Recurso)
+                    # Convierte "cityofkeller" -> "City Of Keller"
+                    if not org and org_slug:
+                        # Separa CamelCase y pone mayúsculas
+                        org = re.sub(r"(\w)([A-Z])", r"\1 \2", org_slug)
+                        org = org.title()
+                        strategy = "Slug Cleaned"
 
-                    # --- FIXED STATE LOGIC ---
+                    # Fallback final por si acaso
+                    if not org or len(org) > 60:
+                        org = "Unknown Organization"
+
+                    # ========================================================
+
+                    # --- RESTO DE CAMPOS (IGUAL QUE ANTES) ---
                     state = ""
                     match_state = re.search(r'State:\s*(.*?)(?:\s+Budget|\n|$)', full_body, re.IGNORECASE)
-                    if match_state: 
-                        state = match_state.group(1).strip()
+                    if match_state: state = match_state.group(1).strip()
 
                     city = ""
                     match_city = re.search(r'City:\s*([A-Za-z\s\.]+)', full_body, re.IGNORECASE)
@@ -216,7 +261,7 @@ def run_scrapers():
                     numeric_val = extract_budget_numeric(budget)
                     if numeric_val < 3000: continue
 
-                    print(f"✅ [{i+1}] {title[:30]}... | Org: {org} | ${numeric_val}")
+                    print(f"✅ [{i+1}] Org: {org} (Via {strategy}) | Budget: ${numeric_val}")
                     opportunities.append(Opportunity(title, org, city, state, "", link, deadline, entry_fee, budget, eligibility, keywords, "CaFÉ", cafe_id))
 
                 except Exception as e:
@@ -227,7 +272,9 @@ def run_scrapers():
         browser.close()
     return opportunities
 
-# --- GOOGLE SHEETS CONNECTION ---
+# ==============================================================================
+# 4. GUARDADO EN SHEETS (ACTUALIZA LO VIEJO + AÑADE LO NUEVO)
+# ==============================================================================
 def get_gspread_client():
     return gspread.service_account(filename='credentials.json')
 
@@ -240,40 +287,61 @@ def save_to_sheets(opportunities):
         print(f"CRITICAL SHEETS ERROR: {e}")
         return []
 
+    # Leemos todo para mapear URLs a Números de Fila
     try:
-        existing_records = worksheet.get_all_values()
-        existing_links = set()
-        for row in existing_records[1:]:
-            if len(row) > 12: existing_links.add(row[12]) 
+        all_values = worksheet.get_all_values()
+        url_to_row_map = {}
+        # Asumiendo que la columna 12 (índice 12, columna M) es Source URL
+        for idx, row in enumerate(all_values):
+            if len(row) > 12: 
+                url_val = row[12]
+                if "http" in url_val:
+                    # Guardamos fila (idx + 1 porque Sheets empieza en 1)
+                    url_to_row_map[url_val] = idx + 1 
     except:
-        existing_links = set()
+        url_to_row_map = {}
 
     new_items = []
     rows_to_add = []
 
+    print(f"Processing Sheet Update... ({len(url_to_row_map)} existing rows found)")
+
     for op in opportunities:
-        if op.link not in existing_links:
+        if op.link in url_to_row_map:
+            # --- SI YA EXISTE: ACTUALIZAR ---
+            row_num = url_to_row_map[op.link]
+            
+            # Actualizamos SOLO la celda de Organization (Columna D = 4)
+            # Esto arregla los errores antiguos como 'Slc' o 'Artist must direct all'
+            worksheet.update_cell(row_num, 4, op.org)
+            
+            # Opcional: Actualizar Budget también por si acaso (Columna H = 8)
+            # worksheet.update_cell(row_num, 8, op.budget)
+            
+            # print(f"🔄 Updated Row {row_num} with Organization: {op.org}")
+        else:
+            # --- SI ES NUEVO: AÑADIR ---
             rows_to_add.append(op.to_row())
             new_items.append(op)
-            existing_links.add(op.link)
     
     if rows_to_add:
         worksheet.append_rows(rows_to_add)
-        print(f"✅ Saved {len(rows_to_add)} rows.")
+        print(f"✅ Added {len(rows_to_add)} new rows.")
     else:
-        print("No new rows found.")
+        print("✅ Finished. No new rows, but existing rows were updated.")
     
     return new_items
 
-# --- EMAIL LOGIC (ENGLISH) ---
+# ==============================================================================
+# 5. ENVIO DE EMAIL
+# ==============================================================================
 def send_email(new_items):
     sender = os.getenv("EMAIL_SENDER")
     password = os.getenv("EMAIL_PASSWORD")
     receivers_str = os.getenv("EMAIL_RECEIVER")
     sheet_id = os.getenv("SHEET_ID") 
     
-    if not sender or not password: 
-        print("⚠️ Missing email credentials.")
+    if not sender or not password or not new_items: 
         return
 
     receivers = receivers_str.split(",")
@@ -285,35 +353,21 @@ def send_email(new_items):
     <h2 style="color:#2c3e50;">🎨 New CaFÉ Opportunities ({len(new_items)})</h2>
     <p style="font-size:16px;">
         👉 <a href="{sheet_link}" style="background-color:#27ae60; color:white; padding:10px 15px; text-decoration:none; border-radius:5px; font-weight:bold;">
-        OPEN GOOGLE SHEETS NOW
+        OPEN GOOGLE SHEETS
         </a>
     </p>
     <hr>
     """
 
-    for item in new_items[:20]: 
-        budget_short = item.budget
-        if len(budget_short) > 80:
-            budget_short = budget_short[:80] + "..."
-
+    for item in new_items[:15]: 
         html += f"""
-        <div style="margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
-            <h3 style="margin:0; font-size:18px;"><a href="{item.link}" style="color:#2980b9; text-decoration:none;">{item.title}</a></h3>
+        <div style="margin-bottom:15px; border-bottom:1px solid #eee;">
+            <h3 style="margin:0;"><a href="{item.link}">{item.title}</a></h3>
             <p style="margin:5px 0; color:#555;">
-                💰 <b>Budget:</b> {budget_short} <br>
-                🎟️ <b>Fee:</b> {item.entry_fee} | 📅 <b>Deadline:</b> {item.deadline}
+                <b>{item.org}</b> <br>
+                💰 {item.budget} | 📅 {item.deadline}
             </p>
         </div>
-        """
-    
-    if len(new_items) > 20:
-        remaining = len(new_items) - 20
-        html += f"""
-        <p style="margin-top:20px; color:#7f8c8d;">
-            ... plus <b>{remaining} more opportunities</b>. 
-            <br><br>
-            <a href="{sheet_link}">Click here to view the full list in Excel.</a>
-        </p>
         """
     
     msg = MIMEMultipart()
