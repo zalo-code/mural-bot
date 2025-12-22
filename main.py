@@ -1,6 +1,7 @@
 import re
 import os
 import smtplib
+import time  # <--- IMPORTANTE: Necesario para las pausas
 import pytz
 import gspread
 from email.mime.text import MIMEText
@@ -158,7 +159,7 @@ def determine_project_type(title, body, keywords):
 def run_scrapers():
     opportunities = []
     with sync_playwright() as p:
-        print("--- 🚀 STARTING SCRAPER (Dynamic Types + Org Fix) ---")
+        print("--- 🚀 STARTING SCRAPER (Dynamic Types + Org Fix + Anti-Block) ---")
         browser = p.chromium.launch(headless=True) 
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         context.route("**/*.{png,jpg,jpeg,svg,css,woff,woff2,gif}", lambda route: route.abort())
@@ -320,19 +321,27 @@ def save_to_sheets(opportunities):
             # --- SI YA EXISTE: ACTUALIZAR ---
             row_num = url_to_row_map[op.link]
             
-            # Actualizamos Organization (Columna D = 4)
-            worksheet.update_cell(row_num, 4, op.org)
+            try:
+                # Actualizamos Organization (Columna D = 4)
+                worksheet.update_cell(row_num, 4, op.org)
+                time.sleep(1.5) # <--- PAUSA DE SEGURIDAD (evita error 429)
+                
+                # 🔥 Actualizamos TAMBIÉN Project Type (Columna G = 7)
+                worksheet.update_cell(row_num, 7, op.project_type)
+                time.sleep(1.5) # <--- PAUSA DE SEGURIDAD
+                
+                # print(f"🔄 Updated Row {row_num}")
+            except Exception as e:
+                print(f"⚠️ Error actualizando fila {row_num} (esperando 5s): {e}")
+                time.sleep(5)
             
-            # 🔥 Actualizamos TAMBIÉN Project Type (Columna G = 7)
-            worksheet.update_cell(row_num, 7, op.project_type)
-            
-            # print(f"🔄 Updated Row {row_num}: Org & Type fixed.")
         else:
             # --- SI ES NUEVO: AÑADIR ---
             rows_to_add.append(op.to_row())
             new_items.append(op)
     
     if rows_to_add:
+        # Añadir filas nuevas no suele dar error 429
         worksheet.append_rows(rows_to_add)
         print(f"✅ Added {len(rows_to_add)} new rows.")
     else:
